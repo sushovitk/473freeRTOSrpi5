@@ -83,6 +83,7 @@ void motorControl(int ifLeftMotor, char command);
 	****/
 
 int DISTANCE_IN_TICKS = 0;
+int DISTANCE_THRESHOLD = 20;
 
 
 //Task 1 is implemented for you. It interfaces with the distance sensor and 
@@ -91,7 +92,11 @@ int DISTANCE_IN_TICKS = 0;
 
 //You may need to alter some values as described in the lab documentation.
 
+// semaphore
+SemaphoreHandle_t xDistanceSemaphore = NULL;
+
 void task1() {
+	// runs every 50ms?
 	portTickType xLastWakeTime;
 	const portTickType xFrequency = 200 / portTICK_RATE_MS;
 	
@@ -115,11 +120,82 @@ void task1() {
 		while(gpio_pin_read(ECHO) == 1);
 		portTickType traveltime_in_ticks = xTaskGetTickCount() - curr;
 
-		DISTANCE_IN_TICKS = traveltime_in_ticks;
+		if (xDistanceSemaphore != NULL) {
+            if (xSemaphoreTake(xDistanceSemaphore, (TickType_t)10) == pdTRUE) {
+                DISTANCE_IN_TICKS = traveltime_in_ticks;
+                xSemaphoreGive(xDistanceSemaphore);
+            }
+        }
 		
 		//END TASK
 		gpio_pin_set(T1_PIN, 0);
 	}
+}
+
+void checkDistance() {
+    portTickType xLastWakeTime;
+    const portTickType xFrequency = 100 / portTICK_RATE_MS; // 100ms period
+    
+    xLastWakeTime = xTaskGetTickCount();
+
+    while (1) {
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        gpio_pin_set(T2_PIN, 1);
+
+        int current_distance = 0;
+        
+        // semaphore protects global var
+        if (xDistanceSemaphore != NULL) {
+            if (xSemaphoreTake(xDistanceSemaphore, (TickType_t)10) == pdTRUE) {
+                current_distance = DISTANCE_IN_TICKS;
+                xSemaphoreGive(xDistanceSemaphore);
+            }
+        }
+
+        // stop if threshold is met
+        if (current_distance < DISTANCE_THRESHOLD) {
+            moveRobot(STOP);
+        } else {
+            moveRobot(FORWARD); 
+        }
+        
+        gpio_pin_set(T2_PIN, 0);
+    }
+}
+
+void flashLED() {
+	portTickType xLastWakeTime;
+    const portTickType xFrequency = 100 / portTICK_RATE_MS;
+    
+    xLastWakeTime = xTaskGetTickCount();
+    while (1) {
+        int current_ticks = 0;
+        
+        // semaphore to protect global var
+        if (xDistanceSemaphore != NULL) {
+            if (xSemaphoreTake(xDistanceSemaphore, (TickType_t)10) == pdTRUE) {
+                current_ticks = DISTANCE_IN_TICKS;
+                xSemaphoreGive(xDistanceSemaphore);
+            }
+        }
+
+        float distance_cm = (current_ticks * portTICK_RATE_MS * 34.3) / 2.0;
+        
+        int delay_ms = (int)(distance_cm * 10);
+        if (delay_ms < 50) {
+            delay_ms = 50;
+        }
+
+        const portTickType flashDelay = delay_ms / portTICK_RATE_MS;
+        
+        
+		// use T3_PIN for flashing the LED
+        gpio_pin_set(T3_PIN, 1);
+        vTaskDelay(flashDelay);
+        
+        gpio_pin_set(T3_PIN, 0);
+        vTaskDelay(flashDelay);
+    }
 }
 
 /****
@@ -160,16 +236,26 @@ int main(void) {
 
 	****/
 
+	xDistanceSemaphore = xSemaphoreCreateBinary();
+    if (xDistanceSemaphore != NULL) {
+        xSemaphoreGive(xDistanceSemaphore); 
+    }
+
+    xTaskCreate(task1, "t1", 128, NULL, 2, NULL);
+    xTaskCreate(checkDistance, "checkDistance", 128, NULL, 2, NULL);
+    xTaskCreate(flashLED, "flashLED", 128, NULL, 1, NULL);
+
+    vTaskStartScheduler();
+
 	//initFB();
 
 	//DisableInterrupts();
 	//InitInterruptController();
 
 	xTaskCreate(task1, "t1", 128, NULL, 2, NULL);
-	/****
-		TODO: Create more tasks here
+	xTaskCreate(checkDistance, "checkDistance", 128, NULL, 2, NULL);
+	xTaskCreate(flashLED, "flashLED", 128, NULL, 1, NULL);
 
-	****/
 
 	//set to 0 for no debug, 1 for debug, or 2 for GCC instrumentation (if enabled in config)
 	//loaded = 1;
